@@ -143,11 +143,11 @@ $$
 **模型假设**
 
 $$
-X_i\sim\operatorname{Exp}(\lambda)
+X_i\sim\mathrm{Exp}(\lambda)
 $$
 
 $$
-S_i\sim\operatorname{Exp}(\mu)
+S_i\sim\mathrm{Exp}(\mu)
 $$
 
 即数据包按照泊松过程生成，服务时间独立同分布，且服从指数分布。
@@ -206,7 +206,7 @@ $$
 **模型假设**
 
 $$
-X_i\sim\operatorname{Exp}(\lambda)
+X_i\sim\mathrm{Exp}(\lambda)
 $$
 
 $$
@@ -278,7 +278,7 @@ X_i=D
 $$
 
 $$
-S_i\sim\operatorname{Exp}(\mu)
+S_i\sim\mathrm{Exp}(\mu)
 $$
 
 其中 D 表示固定的数据包生成周期。
@@ -510,7 +510,7 @@ $$
 由于服务时间方差非负：
 
 $$
-\operatorname{Var}(S)=E[S^2]-(E[S])^2\geq0
+\mathrm{Var}(S)=E[S^2]-(E[S])^2\geq0
 $$
 
 因此：
@@ -539,7 +539,7 @@ $$
 当服务时间确定时：
 
 $$
-\operatorname{Var}(S)=0
+\mathrm{Var}(S)=0
 $$
 
 上述下界取到等号。
@@ -697,7 +697,7 @@ $$
 在稳态 M/M/1 中，系统时间服从指数分布：
 
 $$
-T\sim\operatorname{Exp}(\mu-\lambda)
+T\sim\mathrm{Exp}(\mu-\lambda)
 $$
 
 因此：
@@ -1123,7 +1123,7 @@ $$
 根据方差公式：
 
 $$
-\operatorname{Var}(S)=E[S^2]-(E[S])^2
+\mathrm{Var}(S)=E[S^2]-(E[S])^2
 $$
 
 可以改写成：
@@ -1132,14 +1132,14 @@ $$
 \boxed{
 \Delta^*
 =\frac{3E[S]}{2}
-+\frac{\operatorname{Var}(S)}{2E[S]}
++\frac{\mathrm{Var}(S)}{2E[S]}
 }
 $$
 
 因为：
 
 $$
-\operatorname{Var}(S)\geq0
+\mathrm{Var}(S)\geq0
 $$
 
 所以：
