@@ -1,7 +1,7 @@
 ---
 title: SAM学习笔记：argmax扰动如何用一阶近似求解
 published: 2026-11-16
-description: 从SAM的最小最大目标出发，推导L2约束下的参数扰动闭式解，并说明两次反向传播、AdamW更新及一阶近似的边界。
+description: 从SAM的最小最大目标出发，推导L2约束下的参数扰动闭式解，并补充可运行的PyTorch代码、GRU调用示例和实现验证。
 tags: [机器学习, SAM, 优化算法, 量化研究]
 category: 论文笔记
 lang: zh-CN
@@ -135,9 +135,184 @@ $$
 
 - **联合归一化。** 分母是所有参与扰动参数的梯度联合范数，各层共享一个半径。若每层分别归一化，就改变了约束集合。
 - **恢复参数。** 第二次梯度算完以后先还原权重，再执行优化器更新。
-- **控制随机性。** 本轮实现两次使用相同批次，并恢复相同的CUDA随机状态，使GRU的dropout掩码保持一致。
+- **控制随机性。** 两次使用相同批次，并显式处理随机状态；仅恢复CUDA全局状态并不足以保证所有后端内部状态一致，详见下面的实现说明。
 
 分母中的 $10^{-12}$ 用于避免除零。因此，工程计算得到的扰动范数通常略小于 $\rho$；当梯度恰好为零时，计算结果为零。
+
+### 3.1 可运行的PyTorch实现
+
+下面把伪代码展开为实际函数。`closure()`负责在**同一份已经取出的批次**上计算标量损失；函数内部调用两次，因此不要在`closure`里调用`next(dataloader)`或重新抽样。
+
+示例限定CPU或单张CUDA卡、FP32和稠密梯度，不包含AMP、DDP与BatchNorm运行统计的处理。完整文件可[下载sam-pytorch-example.py](/code/sam-pytorch-example.py)，安装PyTorch后运行`python sam-pytorch-example.py`即可执行合成数据示例。
+
+```python
+"""Single-device FP32 SAM example; synthetic data only."""
+import math
+import torch
+from torch import nn
+
+
+def negative_ic(prediction, target):
+    prediction = prediction.reshape(-1)
+    target = target.reshape(-1)
+    prediction = prediction - prediction.mean()
+    target = target - target.mean()
+    denominator = (prediction.square().sum() * target.square().sum()).sqrt()
+    return -(prediction * target).sum() / (denominator + 1e-8)
+
+
+def sam_step(model, optimizer, closure, rho=0.05):
+    """closure() computes a scalar loss on the SAME preloaded batch."""
+    if not math.isfinite(rho) or rho < 0:
+        raise ValueError("rho must be finite and nonnegative")
+    params = [p for group in optimizer.param_groups
+              for p in group["params"] if p.requires_grad]
+    if not params or len({p.device for p in params}) != 1:
+        raise ValueError("Use one CPU or CUDA device")
+    device = params[0].device
+    if device.type not in {"cpu", "cuda"}:
+        raise ValueError("This example supports CPU/CUDA only")
+    if any(p.dtype != torch.float32 for p in params):
+        raise ValueError("This example uses FP32, without AMP")
+    batch_norm = (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d,
+                  nn.SyncBatchNorm)
+    if any(isinstance(module, batch_norm) for module in model.modules()):
+        raise ValueError("BatchNorm needs separate running-stat handling")
+
+    model.train()
+    cpu_rng = torch.get_rng_state()
+    cuda_rng = torch.cuda.get_rng_state(device) if device.type == "cuda" else None
+
+    # 1. First backward: find the uphill direction.
+    optimizer.zero_grad(set_to_none=True)
+    loss = closure()
+    if loss.ndim != 0 or not torch.isfinite(loss).item():
+        raise ValueError("The first loss must be a finite scalar")
+    loss.backward()
+    active = [p for p in params if p.grad is not None]
+    if not active:
+        raise RuntimeError("No parameter gradients")
+    grad_norm = torch.stack([
+        p.grad.detach().square().sum() for p in active
+    ]).sum().sqrt()
+    if not torch.isfinite(grad_norm).item():
+        raise FloatingPointError("Nonfinite first gradient")
+
+    # 2. One global L2 radius; no gradient graph through the perturbation.
+    original = [p.detach().clone() for p in active]
+    perturbations = [p.grad.detach() * (rho / (grad_norm + 1e-12))
+                     for p in active]
+    try:
+        with torch.no_grad():
+            for p, perturbation in zip(active, perturbations):
+                p.add_(perturbation)
+
+        # 3. Replay dropout randomness and recompute on the SAME batch.
+        optimizer.zero_grad(set_to_none=True)
+        torch.set_rng_state(cpu_rng)
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state(cuda_rng, device)
+        perturbed_loss = closure()
+        if perturbed_loss.ndim != 0 or not torch.isfinite(perturbed_loss).item():
+            raise FloatingPointError("Nonfinite perturbed loss")
+        perturbed_loss.backward()
+        if any(p.grad is not None and not torch.isfinite(p.grad).all().item()
+               for p in params):
+            raise FloatingPointError("Nonfinite second gradient")
+    except Exception:
+        optimizer.zero_grad(set_to_none=True)
+        raise
+    finally:
+        # copy_ restores the original weights exactly, including on failure.
+        with torch.no_grad():
+            for p, saved in zip(active, original):
+                p.copy_(saved)
+
+    # 4. Keep second-pass gradients; do ONE AdamW/SGD update at original weights.
+    optimizer.step()
+    perturbation_norm = torch.stack([
+        e.square().sum() for e in perturbations
+    ]).sum().sqrt()
+    return {
+        "loss": loss.detach().item(),
+        "perturbed_loss": perturbed_loss.detach().item(),
+        "gradient_norm": grad_norm.item(),
+        "perturbation_norm": perturbation_norm.item(),
+    }
+```
+
+代码与公式的对应关系如下：
+
+| 代码步骤 | 数学含义／实现作用 |
+| --- | --- |
+| `loss.backward()` | 计算当前参数处的第一组梯度 |
+| `grad_norm` | 对全部参与扰动参数求联合L2范数；不是逐层归一化 |
+| `p.add_(perturbation)` | 临时进入扰动参数位置，构造一阶近似的内层最大点 |
+| 第二次`zero_grad()`与`backward()` | 清除第一组梯度，只保留扰动位置的第二组梯度 |
+| `finally`中的`p.copy_(saved)` | 无论第二次计算是否成功，都恢复精确保存的原参数 |
+| `optimizer.step()` | 使用第二组梯度，从原参数执行一次AdamW更新 |
+
+其中`torch.no_grad()`只包住参数扰动和还原，不包住第二次前向计算。两个`backward()`均不启用`create_graph=True`，从而不对扰动构造继续求高阶导数。保存原参数再复制还原，也避免了直接加扰动、再减扰动可能积累的舍入误差。
+
+### 3.2 接到GRU与负IC损失
+
+输入形状为`(批次数, 时间长度, 字段数)`，GRU最后一个时间位置的输出通过线性层生成预测分数。下面沿用两层GRU、隐藏维度64、dropout为0.1的结构，用合成标签演示一次更新：
+
+```python
+class GRURegressor(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gru = nn.GRU(6, 64, num_layers=2, dropout=0.1, batch_first=True)
+        self.head = nn.Linear(64, 1)
+
+    def forward(self, x):
+        sequence, _ = self.gru(x)
+        return self.head(sequence[:, -1]).squeeze(-1)
+
+
+def main():
+    torch.manual_seed(7)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = GRURegressor().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    # x: (batch, time, fields). Synthetic labels only check code execution.
+    x = torch.randn(64, 30, 6, device=device)
+    y = 0.6 * x[:, -1, 0] - 0.3 * x[:, -1, 1]
+    closure = lambda: negative_ic(model(x), y)
+    # Native GRU path: avoid cuDNN-owned dropout state in this teaching demo.
+    with torch.backends.cudnn.flags(enabled=False):
+        stats = sam_step(model, optimizer, closure, rho=0.05)
+    print({key: round(value, 6) for key, value in stats.items()})
+
+
+if __name__ == "__main__":
+    main()
+```
+
+CPU运行示例输出如下，显示扰动的联合范数约为0.05：
+
+```text
+{'loss': 0.082153, 'perturbed_loss': 0.3972, 'gradient_norm': 7.824732, 'perturbation_norm': 0.05}
+```
+
+这里的`loss`是更新前的损失，`perturbed_loss`是临时扰动后的损失，二者都不是正式更新后的损失。其他环境的数值可能不同；单步扰动后的真实损失也不保证总比原损失大。一阶近似的性质需要与实际非线性损失区分。
+
+### 3.3 dropout与可复现范围
+
+`sam_step`同时保存和恢复CPU与目标CUDA设备的全局随机状态，可用于重放普通`nn.Dropout`使用的随机数。但这不等于回滚任意算子的全部内部状态；cuDNN RNN可能另有dropout状态。因此，GRU示例在调用时显式关闭cuDNN路径，采用原生PyTorch运算。这会影响性能；若做优化器比较，对照组也应使用相同后端设置。
+
+此前复现代码只保存和恢复CUDA全局随机状态，不能单凭这一步声称已证明cuDNN GRU两次前向的内部掩码完全一致。原有实验代码保持不变；这里补充的是便于理解和验证的独立示例。
+
+### 3.4 已验证哪些行为
+
+该示例在PyTorch 2.9.1的CPU环境上运行，并进行了四项小型检查：
+
+1. 对具有解析解的二次损失，SAM与SGD组合后的参数更新与解析值一致，联合扰动范数约为0.05。
+2. 令ρ＝0时，包含普通Dropout的模型与相同随机状态下的一次普通AdamW更新一致，优化器步数为1。
+3. 人为让第二次损失计算报错后，模型参数精确恢复，AdamW状态未被更新。
+4. 梯度为零时，扰动为零，并且不产生除零错误。
+
+GRU调用示例也已运行。CUDA分支本轮未单独实测；这些检查验证代码行为，不属于股票训练或回测，也不证明SAM能改善量化收益。
 
 ## 4. 实际上用了两层近似
 
@@ -190,3 +365,5 @@ $$
 1. Foret, P., Kleiner, A., Mobahi, H., Neyshabur, B. *Sharpness-Aware Minimization for Efficiently Improving Generalization*. ICLR 2021：[论文](https://arxiv.org/abs/2010.01412)，重点为第2节、公式(1)—(3)及算法1。
 2. [作者代码仓库：google-research/sam](https://github.com/google-research/sam)。仓库使用JAX；本文伪代码用于解释本轮PyTorch实现的更新顺序。
 3. 研究背景：华泰证券，2024年10月10日，《SAM，提升AI量化模型的泛化性能》。上述闭式解推导依据SAM原论文；本轮量化参数属于独立复现配置。
+
+4. PyTorch文档：[清除梯度](https://docs.pytorch.org/docs/2.9/generated/torch.optim.Optimizer.zero_grad.html)、[no_grad](https://docs.pytorch.org/docs/2.9/generated/torch.no_grad.html)、[CPU随机状态](https://docs.pytorch.org/docs/2.9/generated/torch.get_rng_state.html)、[CUDA随机状态](https://docs.pytorch.org/docs/2.9/generated/torch.cuda.get_rng_state.html)。
