@@ -48,5 +48,21 @@
   "src:content/posts/images/gru-fourier/04_年度RankIC.png": "f4e9c2f4debdf5ddbd",
   "src:content/posts/images/gru-fourier/03_回撤.png": "f2f4f3f3f6f5f6f8f7",
   "src:content/posts/images/gru-fourier/02_相对净值.png": "f8f8f8f8f9f9f6f7f7",
-  "src:content/posts/images/gru-fourier/01_累计净值.png": "f7f7f7f4f5f4f4f5f4"
+  "src:content/posts/images/gru-fourier/01_累计净值.png": "f7f7f7f4f5f4f4f5f4",
+  "src:content/posts/images/alpha158-results/strategy-nav.png": "f3f2f3eeeeefefeeef",
+  "src:content/posts/images/alpha158-results/relative-nav.png": "f3f2f3f1f1f2f1f0f2",
+  "src:content/posts/images/alpha158-results/correlation-spearman.png": "d4939ac97078d39198",
+  "src:content/posts/images/alpha158-results/correlation-pearson.png": "cf8e97c16975cd8c96",
+  "src:content/posts/images/alpha158-models/12_SFM.png": "f0f3f5f0f3f6eef0ef",
+  "src:content/posts/images/alpha158-models/11_TabNet.png": "ebf0f5f1f2f2ebf0f4",
+  "src:content/posts/images/alpha158-models/10_TFT.png": "e6ecf2ecf2f7eef1f2",
+  "src:content/posts/images/alpha158-models/09_TRA.png": "f2f5f6f6f5f3f3f2f0",
+  "src:content/posts/images/alpha158-models/08_Localformer.png": "f0f4f7f3f5f6f1f4f5",
+  "src:content/posts/images/alpha158-models/07_Transformer.png": "eff3f6f5f6f6f2f4f4",
+  "src:content/posts/images/alpha158-models/06_TCN.png": "f1f4f7f6f7f7eff1f3",
+  "src:content/posts/images/alpha158-models/05_GATs.png": "f0f3f6f7f6f5f7f6f4",
+  "src:content/posts/images/alpha158-models/04_ALSTM.png": "f2f5f8f5f6f7f5f5f5",
+  "src:content/posts/images/alpha158-models/03_GRU.png": "f2f5f7f9f8f6f2f2f2",
+  "src:content/posts/images/alpha158-models/02_LSTM.png": "f1f4f7f9f8f6f1f2f2",
+  "src:content/posts/images/alpha158-models/01_MLP.png": "edf2f6f5f5f4f0f0ef"
 }
